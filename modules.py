@@ -53,13 +53,17 @@ class Linear(Module):
         self.bias = bias
 
     def __call__(self, params, x, *args):
-        W, b = params
-        return x @ W + b
+        if self.bias:
+            W, b = params
+            return x @ W + b
+        W, = params
+        return x @ W
     
     def init(self, key, fan_in):
         W = jax.random.normal(key, (fan_in, self.fan_out)) / (fan_in**0.5)
         b = jnp.zeros(self.fan_out) if self.bias else None
-        return self.fan_out, (W, b)
+        params = (W,b) if b is not None else (W,)
+        return self.fan_out, params
 
 class BatchNorm(Module):
     def __init__(self, eps=1e-5, momentum=0.001):
@@ -70,8 +74,8 @@ class BatchNorm(Module):
         gamma, beta = params
         running_mean, running_std = batch_stats
         if train:
-            mean = x.mean(axis=0, keepdims=True)
-            std = x.std(axis=0, keepdims=True)
+            mean = x.mean(axis=0)
+            std = x.std(axis=0)
             x = gamma * ((x-mean)/std) + beta
             running_mean = (1-self.momentum) * running_mean + self.momentum * mean
             running_std = (1-self.momentum) * running_std + self.momentum * std
