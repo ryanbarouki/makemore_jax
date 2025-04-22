@@ -11,8 +11,6 @@ def sequential(layers):
         key, subkey = jax.random.split(key)
         fan_in = x.shape[-1]
         for i, layer in enumerate(layers):
-            if layer.is_activation:
-                continue
             key, subkey = jax.random.split(subkey)
             name = layer.__class__.__name__
             fan_in, vars = layer.init(subkey, fan_in)
@@ -20,15 +18,16 @@ def sequential(layers):
                 ps, bnstats = vars
                 params[f"{name}_{i}"] = ps
                 batch_stats[f"{name}_{i}"] = bnstats
-            else:
+            elif layer.has_params:
                 params[f"{name}_{i}"] = vars
+
 
         return params, batch_stats
     
     def apply_fun(params, x, train=True):
         params, batch_stats = params
         for i, layer in enumerate(layers):
-            if layer.is_activation:
+            if not layer.has_params:
                 x = layer(x)
                 continue
             name = f"{layer.__class__.__name__}_{i}"
@@ -43,7 +42,10 @@ def sequential(layers):
     return init_fun, apply_fun
 
 class Module:
-    is_activation = False
+    has_params = True
+
+    def init(self, key, fan_in):
+        return fan_in, ()
 
 class Linear(Module):
     def __init__(self, fan_out, bias=True):
@@ -86,8 +88,29 @@ class BatchNorm(Module):
         running_std = jnp.zeros(fan_in)
 
         return fan_in, ((gamma, beta), (running_mean, running_std))
+    
+class Flatten(Module):
+    def __init__(self):
+        self.has_params = False
+
+    def __call__(self, x):
+        return x.reshape(x.shape[0], -1)
 
 class Embedding(Module):
+    def __init__(self, emb_dim, vocab_size):
+        self.emb_dim = emb_dim
+        self.vocab_size = vocab_size
+
+    def __call__(self, params, x):
+        C, = params
+        return C[x]
+
+    def init(self, key, fan_in):
+        C = jax.random.normal(key, (self.vocab_size, self.emb_dim))
+        return fan_in*self.emb_dim, (C,)
+
+
+class EmbeddingWithFlatten(Module):
     def __init__(self, emb_dim, vocab_size):
         self.emb_dim = emb_dim
         self.vocab_size = vocab_size
@@ -104,7 +127,7 @@ class Embedding(Module):
 
 class Tanh(Module):
     def __init__(self):
-        self.is_activation = True
+        self.has_params = False
     
     def __call__(self, x):
         return jnp.tanh(x)
