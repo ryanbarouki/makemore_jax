@@ -13,7 +13,7 @@ def sequential(layers):
         for i, layer in enumerate(layers):
             key, subkey = jax.random.split(subkey)
             name = layer.__class__.__name__
-            fan_in, vars = layer.init(subkey, fan_in)
+            x, vars = layer.init(subkey, x)
             if isinstance(layer, BatchNorm):
                 ps, bnstats = vars
                 params[f"{name}_{i}"] = ps
@@ -44,9 +44,6 @@ def sequential(layers):
 class Module:
     has_params = True
 
-    def init(self, key, fan_in):
-        return fan_in, ()
-
 class Linear(Module):
     def __init__(self, fan_out, bias=True):
         self.fan_out = fan_out
@@ -59,11 +56,12 @@ class Linear(Module):
         W, = params
         return x @ W
     
-    def init(self, key, fan_in):
+    def init(self, key, x):
+        fan_in = x.shape[-1]
         W = jax.random.normal(key, (fan_in, self.fan_out)) / (fan_in**0.5)
         b = jnp.zeros(self.fan_out) if self.bias else None
         params = (W,b) if b is not None else (W,)
-        return self.fan_out, params
+        return self(params, x), params
 
 class BatchNorm(Module):
     def __init__(self, eps=1e-5, momentum=0.001):
@@ -75,7 +73,8 @@ class BatchNorm(Module):
         running_mean, running_std = batch_stats
         if train:
             mean = x.mean(axis=0)
-            std = x.std(axis=0)
+            var = jnp.mean((x-mean)**2, axis=0)
+            std = jnp.sqrt(var + self.eps)
             x = gamma * ((x-mean)/std) + beta
             running_mean = (1-self.momentum) * running_mean + self.momentum * mean
             running_std = (1-self.momentum) * running_std + self.momentum * std
@@ -83,15 +82,19 @@ class BatchNorm(Module):
             x = gamma * ((x-running_mean)/running_std) + beta
         return x, (running_mean, running_std)
     
-    def init(self, key, fan_in):
+    def init(self, key, x):
+        fan_in = x.shape[-1]
         # return gamma, beta and batch_stats
-        gamma = jnp.ones(fan_in)
-        beta = jnp.zeros(fan_in)
+        gamma = jnp.ones_like(x)
+        beta = jnp.zeros_like(x)
 
-        running_mean = jnp.zeros(fan_in)
-        running_std = jnp.zeros(fan_in)
+        running_mean = jnp.zeros_like(x)
+        running_std = jnp.ones_like(x)
 
-        return fan_in, ((gamma, beta), (running_mean, running_std))
+        params = (gamma, beta)
+        batch_stats = (running_mean, running_std)
+        x, _ = self(params, x, batch_stats, False)
+        return x, (params, batch_stats)
     
 class Flatten(Module):
     def __init__(self):
@@ -99,6 +102,29 @@ class Flatten(Module):
 
     def __call__(self, x):
         return x.reshape(x.shape[0], -1)
+
+    def init(self, key, x):
+        return self(x), ()
+    
+class FlattenConsecutive(Module):
+    def __init__(self, n):
+        self.has_params = False
+        self.n = n
+
+    def __call__(self, x):
+        if len(x.shape) < 3:
+            # to allow initialization to run on single example
+            T, C = x.shape
+            B = 1
+        else:
+            B, T, C = x.shape
+        x = x.reshape(B, T//self.n, C*self.n)
+        if x.shape[1] == 1:
+            x = x.squeeze(1)
+        return x
+    
+    def init(self, key, x):
+        return self(x), ()
 
 class Embedding(Module):
     def __init__(self, emb_dim, vocab_size):
@@ -109,25 +135,10 @@ class Embedding(Module):
         C, = params
         return C[x]
 
-    def init(self, key, fan_in):
+    def init(self, key, x):
         C = jax.random.normal(key, (self.vocab_size, self.emb_dim))
-        return fan_in*self.emb_dim, (C,)
-
-
-class EmbeddingWithFlatten(Module):
-    def __init__(self, emb_dim, vocab_size):
-        self.emb_dim = emb_dim
-        self.vocab_size = vocab_size
-
-    def __call__(self, params, x):
-        C, = params
-        emb = C[x]
-        context_size = x.shape[-1]
-        return emb.reshape(-1, self.emb_dim*context_size)
-
-    def init(self, key, fan_in):
-        C = jax.random.normal(key, (self.vocab_size, self.emb_dim))
-        return fan_in*self.emb_dim, (C,)
+        params = (C,)
+        return self(params, x), params
 
 class Tanh(Module):
     def __init__(self):
@@ -135,4 +146,7 @@ class Tanh(Module):
     
     def __call__(self, x):
         return jnp.tanh(x)
+    
+    def init(self, key, x):
+        return self(x), ()
 
