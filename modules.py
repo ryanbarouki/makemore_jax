@@ -72,8 +72,12 @@ class BatchNorm(Module):
         gamma, beta = params
         running_mean, running_std = batch_stats
         if train:
-            mean = x.mean(axis=0)
-            var = jnp.mean((x-mean)**2, axis=0)
+            if x.ndim == 2:
+                axis = 0
+            elif x.ndim == 3:
+                axis = (0,1)
+            mean = x.mean(axis=axis)
+            var = jnp.mean((x-mean)**2, axis=axis)
             std = jnp.sqrt(var + self.eps)
             x = gamma * ((x-mean)/std) + beta
             running_mean = (1-self.momentum) * running_mean + self.momentum * mean
@@ -85,11 +89,11 @@ class BatchNorm(Module):
     def init(self, key, x):
         fan_in = x.shape[-1]
         # return gamma, beta and batch_stats
-        gamma = jnp.ones_like(x)
-        beta = jnp.zeros_like(x)
+        gamma = jnp.ones(fan_in)
+        beta = jnp.zeros(fan_in)
 
-        running_mean = jnp.zeros_like(x)
-        running_std = jnp.ones_like(x)
+        running_mean = jnp.zeros(fan_in)
+        running_std = jnp.ones(fan_in)
 
         params = (gamma, beta)
         batch_stats = (running_mean, running_std)
